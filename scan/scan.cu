@@ -13,6 +13,36 @@
 
 extern float toBW(int bytes, float sec);
 
+__global__ void upsweep_kernel(int N, int* data, int twod, int twod1) {
+    // Compute overall index from position of thread in current block,
+    // and given the block we are in
+    int index = (blockIdx.x * blockDim.x + threadIdx.x)*twod1;
+
+    if (index < N){
+        data[index+twod1-1] += data[index+twod-1];
+    }else{}
+}
+
+__global__ void downsweep_kernel(int N, int* data, int twod, int twod1) {
+    // Compute overall index from position of thread in current block,
+    // and given the block we are in
+    int index = (blockIdx.x * blockDim.x + threadIdx.x)*twod1;
+
+    if (index < N){
+        int t = data[index+twod-1];
+        data[index+twod-1] = data[index+twod1-1];
+
+        // change twod1 below to twod to reverse prefix sum.
+        data[index+twod1-1] += t;
+    }else{}
+}
+
+__global__ void smol_kernel(int N, int *data) {
+    // Compute overall index from position of thread in current block,
+    // and given the block we are in
+    data[N-1] = 0;
+}
+
 /* Helper function to round up to a power of 2.
  */
 static inline int nextPow2(int n) {
@@ -39,6 +69,29 @@ void exclusive_scan(int *device_data, int length) {
      * both the data array is sized to accommodate the next
      * power of 2 larger than the input.
      */
+    int N = nextPow2(length);
+
+    // Compute number of blocks and threads per block
+    const int threadsPerBlock = 512; 
+    // upsweep phase.
+    for (int twod = 1; twod < N; twod*=2) {
+        int twod1 = twod*2;
+        int blocks = ((N/twod1)+threadsPerBlock-1)/threadsPerBlock;
+        // printf("here %d \n", twod1);
+        upsweep_kernel<<<blocks, threadsPerBlock>>>(N, device_data, twod, twod1);  
+        cudaDeviceSynchronize();          
+    }
+
+    smol_kernel<<<1,1>>>(N, device_data);
+    cudaDeviceSynchronize();
+
+    // downsweep phase.
+    for (int twod = N/2; twod >= 1; twod /= 2) {
+        int twod1 = twod*2;
+        int blocks = ((N/twod1)+threadsPerBlock-1)/threadsPerBlock;
+        downsweep_kernel<<<blocks, threadsPerBlock>>>(N, device_data, twod, twod1);
+        cudaDeviceSynchronize();
+    }
 }
 
 /* This function is a wrapper around the code you will write - it copies the

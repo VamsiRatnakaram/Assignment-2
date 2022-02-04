@@ -62,6 +62,7 @@ print ("--------------\n");
 foreach my $element_count (@element_counts) {
     print ("\nElement Count: $element_count\n");
     my @sys_stdout = system ("./cudaScan -m ${mode} -i $input -n $element_count > ./logs/test/${mode}_correctness_${element_count}.log");
+    # > ./logs/test/${mode}_correctness_${element_count}.log
     my $return_value  = $?;
     if ($return_value == 0) {
         print ("Correctness passed!\n");
