@@ -4,7 +4,7 @@ use POSIX;
 use Getopt::Std;
 
 
-my @element_counts = ("10000", "100000", "1000000", "2000000");
+my @element_counts = ("100", "100000", "1000000", "2000000");
 
 my %fast_times; 
 my %your_times; 

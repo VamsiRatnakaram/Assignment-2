@@ -43,6 +43,30 @@ __global__ void smol_kernel(int N, int *data) {
     data[N-1] = 0;
 }
 
+__global__ void peaks_kernel(int N, int *array, int *result) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index > 0 && index < (N-1)) {
+        if (array[index - 1] < array[index] && array[index] > array[index + 1]) {
+            result[index] = 1;
+        }
+        else {
+            result[index] = 0;
+        }
+    }else {
+        result[index]=0;
+    }
+}
+
+__global__ void result_kernel(int N, int *array, int *result ){
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index > 0 && index <(N-1)){
+        if (array[index]!=array[index+1]){
+            result[array[index]]=index;
+        }
+    }
+}
+
 /* Helper function to round up to a power of 2.
  */
 static inline int nextPow2(int n) {
@@ -57,18 +81,6 @@ static inline int nextPow2(int n) {
 }
 
 void exclusive_scan(int *device_data, int length) {
-    /* TODO
-     * Fill in this function with your exclusive scan implementation.
-     * You are passed the locations of the data in device memory
-     * The data are initialized to the inputs.  Your code should
-     * do an in-place scan, generating the results in the same array.
-     * This is host code -- you will need to declare one or more CUDA
-     * kernels (with the __global__ decorator) in order to actually run code
-     * in parallel on the GPU.
-     * Note you are given the real length of the array, but may assume that
-     * both the data array is sized to accommodate the next
-     * power of 2 larger than the input.
-     */
     int N = nextPow2(length);
 
     // Compute number of blocks and threads per block
@@ -77,7 +89,6 @@ void exclusive_scan(int *device_data, int length) {
     for (int twod = 1; twod < N; twod*=2) {
         int twod1 = twod*2;
         int blocks = ((N/twod1)+threadsPerBlock-1)/threadsPerBlock;
-        // printf("here %d \n", twod1);
         upsweep_kernel<<<blocks, threadsPerBlock>>>(N, device_data, twod, twod1);  
         cudaDeviceSynchronize();          
     }
@@ -166,7 +177,28 @@ int find_peaks(int *device_input, int length, int *device_output) {
      * it requires that. However, you must ensure that the results of
      * find_peaks are correct given the original length.
      */
-    return 0;
+    // Compute number of blocks and threads per block
+    int rounded_length = nextPow2(length);
+    const int threadsPerBlock = 512;
+    const int blocks = (length+threadsPerBlock-1)/threadsPerBlock;
+
+    int *result;
+    cudaMalloc((void **)&result, rounded_length * sizeof(int));
+
+    peaks_kernel<<<threadsPerBlock, blocks>>>(length, device_input, result);
+    cudaDeviceSynchronize();
+
+    
+    exclusive_scan(result, length);
+    cudaDeviceSynchronize();
+    int totalCount;
+
+    cudaMemcpy(&totalCount, &(result[length-1]), sizeof(int), cudaMemcpyDeviceToHost); 
+
+    result_kernel<<<threadsPerBlock, blocks>>>(length,result,device_output);
+    cudaDeviceSynchronize();
+    cudaFree(result); 
+    return totalCount;
 }
 
 /* Timing wrapper around find_peaks. You should not modify this function.
@@ -175,6 +207,12 @@ double cudaFindPeaks(int *input, int length, int *output, int *output_length) {
     int *device_input;
     int *device_output;
     int rounded_length = nextPow2(length);
+
+    // std::cout << "Orignal array";
+    // for (size_t i = 0; i < length; i++) {
+    //     std::cout << input[i];
+    // }std::cout << "\n";
+
     cudaMalloc((void **)&device_input, rounded_length * sizeof(int));
     cudaMalloc((void **)&device_output, rounded_length * sizeof(int));
     cudaMemcpy(device_input, input, length * sizeof(int), cudaMemcpyHostToDevice);
@@ -189,7 +227,10 @@ double cudaFindPeaks(int *input, int length, int *output, int *output_length) {
     *output_length = result;
 
     cudaMemcpy(output, device_output, length * sizeof(int), cudaMemcpyDeviceToHost);
-
+    // std::cout << "Output array";
+    // for (size_t i = 0; i < result; i++) {
+    //     std::cout << output[i];
+    // }std::cout << "\n";
     cudaFree(device_input);
     cudaFree(device_output);
 
