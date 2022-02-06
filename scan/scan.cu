@@ -185,7 +185,7 @@ int find_peaks(int *device_input, int length, int *device_output) {
     int *result;
     cudaMalloc((void **)&result, rounded_length * sizeof(int));
 
-    peaks_kernel<<<threadsPerBlock, blocks>>>(length, device_input, result);
+    peaks_kernel<<<blocks, threadsPerBlock>>>(length, device_input, result);
     cudaDeviceSynchronize();
 
     
@@ -195,7 +195,7 @@ int find_peaks(int *device_input, int length, int *device_output) {
 
     cudaMemcpy(&totalCount, &(result[length-1]), sizeof(int), cudaMemcpyDeviceToHost); 
 
-    result_kernel<<<threadsPerBlock, blocks>>>(length,result,device_output);
+    result_kernel<<<blocks, threadsPerBlock>>>(length,result,device_output);
     cudaDeviceSynchronize();
     cudaFree(result); 
     return totalCount;
