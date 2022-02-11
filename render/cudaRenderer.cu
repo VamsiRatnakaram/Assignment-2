@@ -466,9 +466,9 @@ __global__ void kernelPixelCircle(int circleBase, int circlesToOperateOn) {
     short imageHeight = cuConstRendererParams.imageHeight;
     int numPixels = imageWidth*imageHeight;
 
-    __shared__ float3 circlesCoords[8]; // circlesToOperateOn
-    __shared__ float circlesRad[8]; // circlesToOperateOn
-    __shared__ float3 circlesColor[8]; // CirclesToOperateOn
+    __shared__ float3 circlesCoords[1]; // circlesToOperateOn
+    __shared__ float circlesRad[1]; // circlesToOperateOn
+    __shared__ float3 circlesColor[1]; // CirclesToOperateOn
     __shared__ int pixelXs[32]; // blockDim.x
     __shared__ int pixelYs[32]; // blockDim.x
     __shared__ int depthMap[32]; // blockDim.x
@@ -515,8 +515,6 @@ __global__ void kernelPixelCircle(int circleBase, int circlesToOperateOn) {
                                          invHeight * (static_cast<float>(pixelY) + 0.5f));
 
     if ((minX <= pixelX && pixelX < maxX) && (minY <= pixelY && pixelY < maxY)) {
-        float4 *imgPtr = (float4 *)(&accumShaded[4 * threadIdx.x]);
-
         float diffX = p.x - pixelCenterNorm.x;
         float diffY = p.y - pixelCenterNorm.y;
         float pixelDist = diffX * diffX + diffY * diffY;
@@ -563,6 +561,7 @@ __global__ void kernelPixelCircle(int circleBase, int circlesToOperateOn) {
         while(depthMap[pixelIndex] != threadIdx.y - 1) {
         }
         
+        float4 *imgPtr = (float4 *)(&accumShaded[4 * threadIdx.x]);
         float4 existingColor = *imgPtr;
         float4 newColor;
         newColor.x = alpha * rgb.x + oneMinusAlpha * existingColor.x;
@@ -586,7 +585,6 @@ __global__ void kernelPixelCircle(int circleBase, int circlesToOperateOn) {
         float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
         *imgPtr = accumShaded[threadIdx.x];
     }
-    
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -799,11 +797,11 @@ void CudaRenderer::advanceAnimation() {
 
 void CudaRenderer::render() {
     // 256 threads per block
-    dim3 blockDim(32,8);
+    dim3 blockDim(32, 1);
     dim3 gridDim((image->width*image->height + blockDim.x - 1) / blockDim.x);
     
     int temp = 0;
-    int circlesPerIteration = 8;
+    int circlesPerIteration = 1;
     while (temp < numberOfCircles) {
         int circlesToOperateOn = min(numberOfCircles - temp, circlesPerIteration);
         kernelPixelCircle<<<gridDim, blockDim>>>(temp, circlesToOperateOn);
