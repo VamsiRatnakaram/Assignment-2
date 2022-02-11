@@ -419,6 +419,176 @@ __global__ void kernelRenderCircles() {
     }
 }
 
+__global__ void kernelRenderPixels(int circleIndex) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    short imageWidth = cuConstRendererParams.imageWidth;
+    short imageHeight = cuConstRendererParams.imageHeight;
+    int numPixels = imageWidth*imageHeight;
+
+    if (index >= numPixels)
+        return;
+
+    int pixelX = index % imageWidth;
+    int pixelY = (index - pixelX) / imageWidth;
+
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+
+    int circleIndex3 = 3*circleIndex;
+
+    // Read position and radius
+    float3 p = *(float3 *)(&cuConstRendererParams.position[circleIndex3]);
+    float rad = cuConstRendererParams.radius[circleIndex];
+
+    // Compute the bounding box of the circle. The bound is in integer
+    // screen coordinates, so it's clamped to the edges of the screen.
+    short minX = static_cast<short>(imageWidth * (p.x - rad));
+    short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+    short minY = static_cast<short>(imageHeight * (p.y - rad));
+    short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                            invHeight * (static_cast<float>(pixelY) + 0.5f));
+
+    if ((minX <= pixelX && pixelX < maxX) && (minY <= pixelY && pixelY < maxY)) {
+        float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth)]);
+        imgPtr += pixelX;
+        shadePixel(pixelCenterNorm, p, imgPtr, circleIndex);
+    }
+}
+
+__global__ void kernelPixelCircle(int circleBase, int circlesToOperateOn) {
+    int circleIndex = threadIdx.y;
+    int pixelIndex = blockDim.x * blockIdx.x + threadIdx.x;
+
+    short imageWidth = cuConstRendererParams.imageWidth;
+    short imageHeight = cuConstRendererParams.imageHeight;
+    int numPixels = imageWidth*imageHeight;
+
+    __shared__ float3 circlesCoords[8]; // circlesToOperateOn
+    __shared__ float circlesRad[8]; // circlesToOperateOn
+    __shared__ float3 circlesColor[8]; // CirclesToOperateOn
+    __shared__ int pixelXs[32]; // blockDim.x
+    __shared__ int pixelYs[32]; // blockDim.x
+    __shared__ int depthMap[32]; // blockDim.x
+    __shared__ float4 accumShaded[32]; // blockDim.x
+
+    float invWidth = 1.f / imageWidth;
+    float invHeight = 1.f / imageHeight;
+
+    if (threadIdx.y==0 && pixelIndex < numPixels){
+        pixelXs[threadIdx.x] = pixelIndex % imageWidth;
+        pixelYs[threadIdx.x] = (pixelIndex - pixelIndex % imageWidth) / imageWidth;
+    }
+
+    if (threadIdx.x==0 && threadIdx.y < circlesToOperateOn){
+        int trueCircleIndex = circleBase + circleIndex;
+        circlesCoords[threadIdx.y] = *(float3 *)(&cuConstRendererParams.position[3*trueCircleIndex]);
+        circlesRad[threadIdx.y] = cuConstRendererParams.radius[trueCircleIndex];
+        circlesColor[threadIdx.y] = *(float3 *)&(cuConstRendererParams.color[3*trueCircleIndex]);
+    }
+    __syncthreads();
+
+    if (pixelIndex >= numPixels || threadIdx.y >= circlesToOperateOn)
+        return;
+
+    // Access pixel coords
+    int pixelX = pixelXs[threadIdx.x];
+    int pixelY = pixelYs[threadIdx.x];
+
+    //access circle coords
+    //check whether curr pixel is in circle
+    // Compute the bounding box of the circle. The bound is in integer
+    // screen coordinates, so it's clamped to the edges of the screen.
+    float3 p = circlesCoords[threadIdx.y];
+    float rad = circlesRad[threadIdx.y];
+    short minX = static_cast<short>(imageWidth * (p.x - rad));
+    short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+    short minY = static_cast<short>(imageHeight * (p.y - rad));
+    short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+    //check depth map till value reaches .y-1 (atomic stuff)
+
+    //upadate accumShaded if pixel in circle
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                         invHeight * (static_cast<float>(pixelY) + 0.5f));
+
+    if ((minX <= pixelX && pixelX < maxX) && (minY <= pixelY && pixelY < maxY)) {
+        float4 *imgPtr = (float4 *)(&accumShaded[4 * threadIdx.x]);
+
+        float diffX = p.x - pixelCenterNorm.x;
+        float diffY = p.y - pixelCenterNorm.y;
+        float pixelDist = diffX * diffX + diffY * diffY;
+        float maxDist = rad * rad;
+
+        // Circle does not contribute to the image
+        if (pixelDist > maxDist)
+            return;
+
+        float3 rgb;
+        float alpha;
+
+        // There is a non-zero contribution.  Now compute the shading value
+
+        // Suggestion: This conditional is in the inner loop.  Although it
+        // will evaluate the same for all threads, there is overhead in
+        // setting up the lane masks, etc., to implement the conditional.  It
+        // would be wise to perform this logic outside of the loops in
+        // kernelRenderCircles.  (If feeling good about yourself, you
+        // could use some specialized template magic).
+        if (cuConstRendererParams.sceneName == SNOWFLAKES ||
+            cuConstRendererParams.sceneName == SNOWFLAKES_SINGLE_FRAME) {
+
+            const float kCircleMaxAlpha = .5f;
+            const float falloffScale = 4.f;
+
+            float normPixelDist = sqrt(pixelDist) / rad;
+            rgb = lookupColor(normPixelDist);
+
+            float maxAlpha = .6f + .4f * (1.f - p.z);
+            maxAlpha = kCircleMaxAlpha * fmaxf(fminf(maxAlpha, 1.f), 0.f); // kCircleMaxAlpha * clamped value
+            alpha = maxAlpha * exp(-1.f * falloffScale * normPixelDist * normPixelDist);
+
+        } else {
+            // Simple: each circle has an assigned color
+            rgb = circlesColor[threadIdx.y];
+            alpha = .5f;
+        }
+
+        float oneMinusAlpha = 1.f - alpha;
+
+        // BEGIN SHOULD-BE-ATOMIC REGION
+        // Shared memory read
+        while(depthMap[pixelIndex] != threadIdx.y - 1) {
+        }
+        
+        float4 existingColor = *imgPtr;
+        float4 newColor;
+        newColor.x = alpha * rgb.x + oneMinusAlpha * existingColor.x;
+        newColor.y = alpha * rgb.y + oneMinusAlpha * existingColor.y;
+        newColor.z = alpha * rgb.z + oneMinusAlpha * existingColor.z;
+        newColor.w = alpha + existingColor.w;
+
+        // Shared memory write
+        *imgPtr = newColor;
+        atomicAdd_block(&depthMap[pixelIndex],1);
+        
+        // END SHOULD-BE-ATOMIC REGION
+    }else{
+        while(depthMap[pixelIndex] != threadIdx.y - 1) {
+        }
+        atomicAdd_block(&depthMap[pixelIndex],1);
+    }
+    
+    //if last circle being operated on, load accum pixel shaded value back to memory
+    if(threadIdx.y - 1 == circlesToOperateOn) {
+        float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
+        *imgPtr = accumShaded[threadIdx.x];
+    }
+    
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
 
 CudaRenderer::CudaRenderer() {
@@ -616,11 +786,28 @@ void CudaRenderer::advanceAnimation() {
     cudaDeviceSynchronize();
 }
 
-void CudaRenderer::render() {
-    // 256 threads per block is a healthy number
-    dim3 blockDim(256, 1);
-    dim3 gridDim((numberOfCircles + blockDim.x - 1) / blockDim.x);
+// void CudaRenderer::render() {
+//     // 256 threads per block is a healthy number
+//     dim3 blockDim(1024, 1);
+//     dim3 gridDim((image->width*image->height + blockDim.x - 1) / blockDim.x);
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
-    cudaDeviceSynchronize();
+//     for (int i = 0; i < numberOfCircles; i++) {
+//         kernelRenderPixels<<<gridDim, blockDim>>>(i);
+//     }
+//     cudaDeviceSynchronize();
+// }
+
+void CudaRenderer::render() {
+    // 256 threads per block
+    dim3 blockDim(32,8);
+    dim3 gridDim((image->width*image->height + blockDim.x - 1) / blockDim.x);
+    
+    int temp = 0;
+    int circlesPerIteration = 8;
+    while (temp < numberOfCircles) {
+        int circlesToOperateOn = min(numberOfCircles - temp, circlesPerIteration);
+        kernelPixelCircle<<<gridDim, blockDim>>>(temp, circlesToOperateOn);
+        cudaDeviceSynchronize();
+        temp += circlesPerIteration;
+    }
 }
