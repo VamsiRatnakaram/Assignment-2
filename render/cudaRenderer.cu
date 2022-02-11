@@ -466,9 +466,9 @@ __global__ void kernelPixelCircle(int circleBase, int circlesToOperateOn) {
     short imageHeight = cuConstRendererParams.imageHeight;
     int numPixels = imageWidth*imageHeight;
 
-    __shared__ float3 circlesCoords[1]; // circlesToOperateOn
-    __shared__ float circlesRad[1]; // circlesToOperateOn
-    __shared__ float3 circlesColor[1]; // CirclesToOperateOn
+    __shared__ float3 circlesCoords[8]; // circlesToOperateOn
+    __shared__ float circlesRad[8]; // circlesToOperateOn
+    __shared__ float3 circlesColor[8]; // CirclesToOperateOn
     __shared__ int pixelXs[32]; // blockDim.x
     __shared__ int pixelYs[32]; // blockDim.x
     __shared__ int depthMap[32]; // blockDim.x
@@ -797,11 +797,11 @@ void CudaRenderer::advanceAnimation() {
 
 void CudaRenderer::render() {
     // 256 threads per block
-    dim3 blockDim(32, 1);
+    dim3 blockDim(32, 8);
     dim3 gridDim((image->width*image->height + blockDim.x - 1) / blockDim.x);
     
     int temp = 0;
-    int circlesPerIteration = 1;
+    int circlesPerIteration = 8;
     while (temp < numberOfCircles) {
         int circlesToOperateOn = min(numberOfCircles - temp, circlesPerIteration);
         kernelPixelCircle<<<gridDim, blockDim>>>(temp, circlesToOperateOn);
