@@ -18,12 +18,14 @@ class CudaRenderer : public CircleRenderer {
     float *velocity;
     float *color;
     float *radius;
+    int   *circlesPerPartition;
 
     float *cudaDevicePosition;
     float *cudaDeviceVelocity;
     float *cudaDeviceColor;
     float *cudaDeviceRadius;
     float *cudaDeviceImageData;
+    int   *cudaDeviceCirclesPerPartition;
 
   public:
     CudaRenderer();
