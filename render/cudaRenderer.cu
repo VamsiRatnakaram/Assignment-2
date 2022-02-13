@@ -33,8 +33,8 @@ if (abort) exit(code);
 #define cudaCheckError(ans) ans
 #endif
 
-#define BLOCKSIZE 1024
-#define SCAN_BLOCK_DIM 1024  // needed by sharedMemExclusiveScan implementation
+#define BLOCKSIZE 512
+#define SCAN_BLOCK_DIM 512  // needed by sharedMemExclusiveScan implementation
 #include "exclusiveScan.cu_inl"
 #include "circleBoxTest.cu_inl"
 
@@ -69,7 +69,7 @@ struct GlobalConstants {
 __constant__ GlobalConstants cuConstRendererParams;
 
 // Read-only lookup tables used to quickly compute noise (needed by
-// advanceAnimation for the snowflake scene)
+// advanceAnimation for th-e snowflake scene)
 __constant__ int cuConstNoiseYPermutationTable[256];
 __constant__ int cuConstNoiseXPermutationTable[256];
 __constant__ float cuConstNoise1DValueTable[256];
