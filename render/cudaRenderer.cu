@@ -552,7 +552,8 @@ __global__ void findIdxs(int baseCol) {
 }
 
 __global__ void accumPixel(int circleBase) {
-    int partitionIndex = blockIdx.x;
+    int partitionIndex = blockIdx.x / 2;
+    int partitionOffset = blockIdx.x % 2;
     int xOffset = threadIdx.x;
     int yOffset = threadIdx.y;
     // Calculate partition bounds
@@ -587,7 +588,7 @@ __global__ void accumPixel(int circleBase) {
     __syncthreads();
 
     int pixelY = partitionY*32 + yOffset;
-    int pixelX = partitionX*64 + xOffset;
+    int pixelX = (partitionX+partitionOffset)*32 + xOffset;
     int pixelIndex = pixelY*cuConstRendererParams.imageWidth + pixelX;
     int blockIndex = blockDim.x*threadIdx.y + threadIdx.x;
     accumShaded[blockIndex] = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
@@ -853,5 +854,12 @@ void CudaRenderer::render() {
     // cudaMemcpy(partition, cudaDeviceCirclesPerPartition, sizeof(int) * ((image->width+63)/64) * ((image->height+31)/32) * numberOfCircles, cudaMemcpyDeviceToHost);
     // for (int i = 250*3; i < 270*3; i+= 3) {
     //     printf("Row %d: %d, %d, %d\n", i/3, partition[i], partition[i+1], partition[i+2]);
-    // }  
+    // } 
+
+    dim3 block(32, 32);
+    dim3 grid(648*2);
+    for (int i = 0; i < numberOfCircles; i += 256) {
+        accumPixel<<<grid, block>>>(i);
+        cudaCheckError( cudaDeviceSynchronize() );
+    }
 }
