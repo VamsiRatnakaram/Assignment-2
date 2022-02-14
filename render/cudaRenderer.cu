@@ -33,8 +33,8 @@ if (abort) exit(code);
 #define cudaCheckError(ans) ans
 #endif
 
-#define BLOCKSIZE 512
-#define SCAN_BLOCK_DIM 512  // needed by sharedMemExclusiveScan implementation
+#define BLOCKSIZE 1024
+#define SCAN_BLOCK_DIM 1024  // needed by sharedMemExclusiveScan implementation
 #include "exclusiveScan.cu_inl"
 #include "circleBoxTest.cu_inl"
 
@@ -57,8 +57,6 @@ struct GlobalConstants {
     int imageWidth;
     int imageHeight;
     float *imageData;
-    int* circlesPerPartition;
-    int* lastCircleIndex;
 };
 
 // Global variable that is in scope, but read-only, for all CUDA
@@ -606,6 +604,105 @@ __global__ void accumPixel(int circleBase) {
     *imgPtr = accumShaded[blockIndex];
 }
 
+__global__ void oneKernel() {
+    int threadIndex = threadIdx.x;
+    int blockIndex = blockIdx.x;
+    int invWidth = 1.f / cuConstRendererParams.imageWidth;
+    int invHeight = 1.f / cuConstRendererParams.imageHeight;
+    
+    // Calculate partition bounds
+    int partitionIndex = blockIndex;
+    int partitionY = partitionIndex / 36;
+    int partitionX = partitionIndex % 36;
+
+    // Calculate Sides
+    float boxL = invWidth * (static_cast<float>((partitionX * 32)) - 0.5f);
+    float boxR = invWidth * (static_cast<float>(min(((partitionX + 1) * 32),cuConstRendererParams.imageWidth)) + 0.5f);
+    float boxT = invHeight * (static_cast<float>((partitionY * 32)) - 0.5f);
+    float boxB = invHeight * (static_cast<float>(min(((partitionY + 1) * 32),cuConstRendererParams.imageHeight)) + 0.5f);
+
+    // threadIndex, blockIndex
+    // Calculate partition Offset
+    int yOffset = threadIndex / 32;
+    int xOffset = threadIndex % 32;
+    // Calculate partition bounds
+    int partitionY = blockIndex / 36;
+    int partitionX = blockIndex % 36;
+    if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight){
+        float4 accumShaded = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
+        int pixelY = partitionY*32 + yOffset;
+        int pixelX = partitionX*32 + xOffset;
+        int pixelIndex = pixelY*cuConstRendererParams.imageWidth + pixelX;
+        float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                            invHeight * (static_cast<float>(pixelY) + 0.5f));
+    }
+
+    for(int circleBase=0;i<cuConstRendererParams.numberOfCircles;circleBase+=1024){
+        // gather partition data
+        __shared__ float3 p[1024];
+        __shared__ float rad[1024];
+        __shared__ uint circlesInParitions[1024];
+        __shared__ uint prefixSumOutput[BLOCKSIZE];
+        volatile __shared__ uint prefixSumScratch[2 * BLOCKSIZE];
+        __shared__ int numIntersections;
+        __shared__ float3 color[1024];
+
+        int circleIndex = circleBase + threadIndex;
+        if (circleBase + threadIndex < cuConstRendererParams.numberOfCircles) {
+            p[threadIndex] = *(float3 *)(&cuConstRendererParams.position[3* circleIndex]);
+            rad[threadIndex] = cuConstRendererParams.radius[circleIndex];
+            color[threadIndex] = *(float3 *)&(cuConstRendererParams.color[3*circleIndex])
+            circlesInParitions[threadIndex] = 0;
+        }
+
+        __syncthreads();
+
+        if (circleBase + threadIndex < cuConstRendererParams.numberOfCircles && circleInBox(p.x, p.y, rad, boxL, boxR, boxT, boxB)) {
+            circlesInParitions[threadIndex] = 1;
+            prefixSumOutput[threadIdx.x] = 0;
+            prefixSumScratch[threadIdx.x] = 0;
+            prefixSumScratch[BLOCKSIZE+threadIdx.x] = 0;
+        }else {
+            circlesInParitions[threadIndex] = 0;
+            prefixSumOutput[threadIdx.x] = 0;
+            prefixSumScratch[threadIdx.x] = 0;
+            prefixSumScratch[BLOCKSIZE+threadIdx.x] = 0;
+        }
+
+        __syncthreads();
+
+        sharedMemExclusiveScan(threadIndex, circlesInParitions, prefixSumOutput, prefixSumScratch, BLOCKSIZE);
+
+        __syncthreads();
+        
+        if (threadIndex < BLOCKSIZE-1){
+            if (prefixSumOutput[threadIndex]!= prefixSumOutput[threadIndex+1]){
+                circlesInParitions[prefixSumOutput[threadIndex]] = circleBase + threadIndex;
+            }
+        }else{
+            numIntersections = prefixSumOutput[BLOCKSIZE-1];
+            if(circlesInParitions[BLOCKSIZE-1]==1){
+                circlesInParitions[numIntersections] = circleBase + BLOCKSIZE-1;
+            }
+        }
+        __syncthreads();
+
+        if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight) {
+            // accumulation stage
+            for (int i = 0; i < numIntersections; i++) {
+                int currIdx = circlesInPartitions[i];
+                shadePixelShared(pixelCenterNorm, p[currIdx], rad[currIdx], color[currIdx], &accumShaded);
+            }   
+        }
+        __syncthreads();
+    }
+
+    if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight) {
+        float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
+        *imgPtr = accumShaded;
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////
 
 CudaRenderer::CudaRenderer() {
@@ -716,18 +813,6 @@ void CudaRenderer::setup() {
     cudaMalloc(&cudaDeviceRadius, sizeof(float) * numberOfCircles);
     cudaMalloc(&cudaDeviceImageData, sizeof(float) * 4 * image->width * image->height);
 
-    //
-    cudaMalloc(&cudaDeviceCirclesPerPartition, sizeof(int) * ((image->width+63)/64) * ((image->height+31)/32) * (numberOfCircles));
-    int *circlesPerPartition;
-    circlesPerPartition = (int*)calloc(((image->width+63)/64) * ((image->height+31)/32) * (numberOfCircles), sizeof(int));
-    cudaMemcpy(cudaDeviceCirclesPerPartition, circlesPerPartition, sizeof(circlesPerPartition), cudaMemcpyHostToDevice);
-
-    cudaMalloc(&cudaDeviceLastCircleIndex, 648 * sizeof(int));
-    int *lastCircleIndex;
-    lastCircleIndex = (int*)calloc(648, sizeof(int));
-    cudaMemcpy(cudaDeviceLastCircleIndex, lastCircleIndex, sizeof(circlesPerPartition), cudaMemcpyHostToDevice);
-    //
-
     cudaMemcpy(cudaDevicePosition, position, sizeof(float) * 3 * numberOfCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceVelocity, velocity, sizeof(float) * 3 * numberOfCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceColor, color, sizeof(float) * 3 * numberOfCircles, cudaMemcpyHostToDevice);
@@ -751,9 +836,6 @@ void CudaRenderer::setup() {
     params.color = cudaDeviceColor;
     params.radius = cudaDeviceRadius;
     params.imageData = cudaDeviceImageData;
-
-    params.circlesPerPartition = cudaDeviceCirclesPerPartition;
-    params.lastCircleIndex = cudaDeviceLastCircleIndex;
 
     cudaMemcpyToSymbol(cuConstRendererParams, &params, sizeof(GlobalConstants));
 
@@ -828,38 +910,9 @@ void CudaRenderer::advanceAnimation() {
     cudaDeviceSynchronize();
 }
 
-// ctrl x
-
 void CudaRenderer::render() {
-    dim3 blockDim(648,1);
-    dim3 gridDim(numberOfCircles,1);
-    gatherPartitionInfo<<<gridDim, blockDim>>>();
-    cudaCheckError(cudaDeviceSynchronize());
-
-    // int *partition;
-    // partition = (int*)calloc(sizeof(int) * ((image->width+63)/64) * ((image->height+31)/32) * (numberOfCircles), sizeof(int));
-    // cudaMemcpy(partition, cudaDeviceCirclesPerPartition, sizeof(int) * ((image->width+63)/64) * ((image->height+31)/32) * numberOfCircles, cudaMemcpyDeviceToHost);
-    // for (int i = 250*3; i < 270*3; i+= 3) {
-    //     printf("Row %d: %d, %d, %d\n", i/3, partition[i], partition[i+1], partition[i+2]);
-    // }
-
-
-    for (int i = 0; i < numberOfCircles; i += BLOCKSIZE) {
-        dim3 blockDim(BLOCKSIZE,1);
-        dim3 gridDim(648,1);
-        findIdxs<<<gridDim, blockDim>>>(i);
-        cudaCheckError( cudaDeviceSynchronize() );
-    }
-    
-    // cudaMemcpy(partition, cudaDeviceCirclesPerPartition, sizeof(int) * ((image->width+63)/64) * ((image->height+31)/32) * numberOfCircles, cudaMemcpyDeviceToHost);
-    // for (int i = 250*3; i < 270*3; i+= 3) {
-    //     printf("Row %d: %d, %d, %d\n", i/3, partition[i], partition[i+1], partition[i+2]);
-    // } 
-
-    dim3 block(32, 32);
-    dim3 grid(648*2);
-    for (int i = 0; i < numberOfCircles; i += 256) {
-        accumPixel<<<grid, block>>>(i);
-        cudaCheckError( cudaDeviceSynchronize() );
-    }
+    dim3 blockDim(1024,1);
+    dim3 gridDim(1296,1);
+    oneKernel<<<gridDim, blockDim>>>(i);
+    cudaCheckError( cudaDeviceSynchronize() );
 }
