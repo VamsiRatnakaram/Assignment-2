@@ -479,9 +479,9 @@ __global__ void oneKernel() {
     
     // Calculate partition bounds
     float boxL = invWidth * (static_cast<float>(blockIdx.x*32) - 0.5f);
-    float boxR = invWidth * (static_cast<float>(min((blockIdx.x+1)*32,cuConstRendererParams.imageWidth)) + 0.5f);
+    float boxR = invWidth * (static_cast<float>(min((blockIdx.x+1)*32,1150)) + 0.5f);
     float boxB = invHeight * (static_cast<float>(blockIdx.y*32) - 0.5f);
-    float boxT = invHeight * (static_cast<float>(min((blockIdx.y+1)*32, cuConstRendererParams.imageHeight)) + 0.5f);
+    float boxT = invHeight * (static_cast<float>(min((blockIdx.y+1)*32,1150)) + 0.5f);
 
     // Calculate partition Offset
     int pixelY = blockIdx.y*blockDim.x + threadIdx.y;

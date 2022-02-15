@@ -1,0 +1,9 @@
+---------------------------------------------------------
+Found 1 CUDA devices
+Device 0: NVIDIA GeForce RTX 2080
+   SMs:        46
+   Global mem: 7974 MB
+   CUDA Cap:   7.5
+---------------------------------------------------------
+GPU_time: 4.536 ms
+Scan outputs are correct!
