@@ -479,26 +479,21 @@ __global__ void oneKernel() {
     
     // Calculate partition bounds
     float boxL = invWidth * (static_cast<float>(blockIdx.x*32) - 0.5f);
-    float boxR = invWidth * (static_cast<float>(min((blockIdx.x+1)*32,1150)) + 0.5f);
+    float boxR = invWidth * (static_cast<float>(min((blockIdx.x+1)*32,cuConstRendererParams.imageWidth)) + 0.5f);
     float boxB = invHeight * (static_cast<float>(blockIdx.y*32) - 0.5f);
-    float boxT = invHeight * (static_cast<float>(min((blockIdx.y+1)*32,1150)) + 0.5f);
+    float boxT = invHeight * (static_cast<float>(min((blockIdx.y+1)*32, cuConstRendererParams.imageHeight)) + 0.5f);
 
     // Calculate partition Offset
     int pixelY = blockIdx.y*blockDim.x + threadIdx.y;
     int pixelX = blockIdx.x*blockDim.y + threadIdx.x;
     int pixelIndex = pixelY * cuConstRendererParams.imageWidth + pixelX;
     float4 accumShaded;
-    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelIndex % cuConstRendererParams.imageWidth) + 0.5f),
-                                         invHeight * (static_cast<float>(pixelIndex / cuConstRendererParams.imageWidth) + 0.5f));
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                         invHeight * (static_cast<float>(pixelY) + 0.5f));
 
      if (pixelY < cuConstRendererParams.imageHeight && pixelX < cuConstRendererParams.imageWidth){
         accumShaded = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
     }
-
-    if (threadIdx.x == 0 && threadIdx.y == 0){
-        printf("block x (%d) and y (%d) and pixelIndex (%d)\n", blockIdx.x, blockIdx.y, pixelIndex);
-    }
-
     __syncthreads();
 
 
@@ -522,8 +517,7 @@ __global__ void oneKernel() {
         if (circleIndex < cuConstRendererParams.numberOfCircles) {
             p[threadIndex] = *(float3*)(&cuConstRendererParams.position[3* circleIndex]);
             rad[threadIndex] = cuConstRendererParams.radius[circleIndex];
-            // if(circleInBox(p[threadIndex].x, p[threadIndex].y, rad[threadIndex], boxL, boxR, boxT, boxB)){
-            if(1){ 
+            if(circleInBox(p[threadIndex].x, p[threadIndex].y, rad[threadIndex], boxL, boxR, boxT, boxB)){
                 color[threadIndex] = *(float3 *)&(cuConstRendererParams.color[3*circleIndex]);
                 circlesInPartitions[threadIndex] = 1;
                 atomicAdd_block(&numIntersections, 1);
@@ -563,31 +557,6 @@ __global__ void oneKernel() {
         *imgPtr = accumShaded;
     }
     __syncthreads();
-}
-
-__global__ void twoKernel(){
-   // int threadIndex = threadIdx.y*blockDim.x+threadIdx.x;
-    float invWidth = 1.f / cuConstRendererParams.imageWidth;
-    float invHeight = 1.f / cuConstRendererParams.imageHeight;
-    int pixelY = blockIdx.y*blockDim.x + threadIdx.y;
-    int pixelX = blockIdx.x*blockDim.y + threadIdx.x;
-    int pixelIndex = pixelY * cuConstRendererParams.imageWidth + pixelX;
-    float4 accumShaded;
-    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                         invHeight * (static_cast<float>(pixelY) + 0.5f));
-
-    if (pixelY < cuConstRendererParams.imageHeight && pixelX < cuConstRendererParams.imageWidth){
-        accumShaded = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
-    }else{ 
-        return;
-    }
-    for (int i = 0; i < cuConstRendererParams.numberOfCircles ; i++) {
-        float3 circlePos=*(float3*)(&cuConstRendererParams.position[3*i]);
-        shadePixel(pixelCenterNorm,circlePos,&accumShaded,i);
-    } 
-    float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
-    *imgPtr = accumShaded; 
-
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
