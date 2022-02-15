@@ -477,13 +477,11 @@ __global__ void oneKernel() {
     float invWidth = 1.f / cuConstRendererParams.imageWidth;
     float invHeight = 1.f / cuConstRendererParams.imageHeight;
     
-    // // Calculate partition bounds
-
-    // // // Calculate Sides
-    float boxL = invWidth * (static_cast<float>(blockIdx.x*32-1));
-    float boxR = invWidth * (static_cast<float>(min((blockIdx.x+1)*33,1150)));
-    float boxB = invHeight * (static_cast<float>(blockIdx.y*32-1));
-    float boxT = invHeight * (static_cast<float>(min((blockIdx.y+1)*33,1150)));
+    // Calculate partition bounds
+    float boxL = invWidth * (static_cast<float>(blockIdx.x*32) - 0.5f);
+    float boxR = invWidth * (static_cast<float>(min((blockIdx.x+1)*32,1150)) + 0.5f);
+    float boxB = invHeight * (static_cast<float>(blockIdx.y*32) - 0.5f);
+    float boxT = invHeight * (static_cast<float>(min((blockIdx.y+1)*32,1150)) + 0.5f);
 
     // Calculate partition Offset
     int pixelY = blockIdx.y*blockDim.x + threadIdx.y;
@@ -495,6 +493,10 @@ __global__ void oneKernel() {
 
      if (pixelY < cuConstRendererParams.imageHeight && pixelX < cuConstRendererParams.imageWidth){
         accumShaded = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
+    }
+
+    if (threadIdx.x == 0 && threadIdx.y == 0){
+        printf("block x (%d) and y (%d) and pixelIndex (%d)\n", blockIdx.x, blockIdx.y, pixelIndex);
     }
 
     __syncthreads();
@@ -520,7 +522,7 @@ __global__ void oneKernel() {
         if (circleIndex < cuConstRendererParams.numberOfCircles) {
             p[threadIndex] = *(float3*)(&cuConstRendererParams.position[3* circleIndex]);
             rad[threadIndex] = cuConstRendererParams.radius[circleIndex];
-            //if(circleInBox(p[threadIndex].x, p[threadIndex].y, rad[threadIndex], boxL, boxR, boxT, boxB)){
+            // if(circleInBox(p[threadIndex].x, p[threadIndex].y, rad[threadIndex], boxL, boxR, boxT, boxB)){
             if(1){ 
                 color[threadIndex] = *(float3 *)&(cuConstRendererParams.color[3*circleIndex]);
                 circlesInPartitions[threadIndex] = 1;
