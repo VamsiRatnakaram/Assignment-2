@@ -464,24 +464,20 @@ __global__ void oneKernel() {
     
     // // Calculate partition bounds
 
-    // int blockY = blockIdx.x / 36;
-    // int blockX = blockIdx.x % 36;
     // // Calculate Sides
-    // float boxL = invWidth * (static_cast<float>((blockX * 32)) - 10.0f);
-    // float boxR = invWidth * (static_cast<float>(min(((blockX + 1) * 32), 1150)) + 10.0f);
-    // float boxT = invHeight * (static_cast<float>(((blockY + 1) * 32)) + 10.0f);
-    // float boxB = invHeight * (static_cast<float>(min((blockY * 32),1150)) - 10.0f);
+    float boxL = invWidth * (static_cast<float>(blockIdx.x*32-1));
+    float boxR = invWidth * (static_cast<float>(min((blockIdx.x+1)*33,1150)));
+    float boxB = invHeight * (static_cast<float>(blockIdx.y*32-1));
+    float boxT = invHeight * (static_cast<float>(min((blockIdx.y+1)*33,1150)));
 
     // threadIndex, blockIndex
     // Calculate partition Offset
-    // int yOffset = threadIndex / 32;
-    // int xOffset = threadIndex % 32;
     int pixelY = blockIdx.y*32 + threadIdx.y;
     int pixelX = blockIdx.x*32 + threadIdx.x;
     int pixelIndex = pixelY * cuConstRendererParams.imageWidth + pixelX;
     float4 accumShaded;
-    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX + 0.5f)),
-                                         invHeight * (static_cast<float>(pixelY + 0.5f)));
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelIndex%1150) + 0.5f),
+                                         invHeight * (static_cast<float>(pixelIndex/1150) + 0.5f));
 
     if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight){
         accumShaded = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
@@ -507,10 +503,10 @@ __global__ void oneKernel() {
         prefixSumScratch[BLOCKSIZE+threadIndex] = 0;
         circlesInPartitions[threadIndex] = 0;
         if (circleIndex < cuConstRendererParams.numberOfCircles) {
-            p[threadIndex] = *(float3 *)(&cuConstRendererParams.position[3* circleIndex]);
+            p[threadIndex] = *(float3*)(&cuConstRendererParams.position[3* circleIndex]);
             rad[threadIndex] = cuConstRendererParams.radius[circleIndex];
-            // if(circleInBox(p[threadIndex].x, p[threadIndex].y, rad[threadIndex], boxL, boxR, boxT, boxB)){
-            if(1) {
+            //if(circleInBox(p[threadIndex].x, p[threadIndex].y, rad[threadIndex], boxL, boxR, boxT, boxB)){
+            if(1){ 
                 color[threadIndex] = *(float3 *)&(cuConstRendererParams.color[3*circleIndex]);
                 circlesInPartitions[threadIndex] = 1;
                 atomicAdd_block(&numIntersections, 1);
@@ -538,17 +534,17 @@ __global__ void oneKernel() {
         if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight) {
             // accumulation stage
             for (int i = 0; i < numIntersections; i++) {
+                // int circleIdx=circleBase+i;
                 shadePixelShared(pixelCenterNorm, p[i], rad[i], color[i], &accumShaded);
+                // shadePixel(pixelCenterNorm,p[i],&accumShaded,circleIdx);
             }   
         }
         __syncthreads();
     }
 
-    if (blockIdx.x == 0 && blockIdx.y == 0) {
     if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight) {
         float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
         *imgPtr = accumShaded;
-    }
     }
     __syncthreads();
 }
