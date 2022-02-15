@@ -395,7 +395,7 @@ __device__ __inline__ void shadePixel(float2 pixelCenter, float3 p, float4 *imag
     // END SHOULD-BE-ATOMIC REGION
 }
 
-// shadePixel -- (CUDA device code)
+// shadePixelShared -- (CUDA device code)
 //
 // Given a pixel and a circle, determine the contribution to the
 // pixel from the circle.  Update of the image is done in this
@@ -457,250 +457,100 @@ __device__ __inline__ void shadePixelShared(float2 pixelCenter, float3 p, float 
     // END SHOULD-BE-ATOMIC REGION
 }
 
-// ctrl x
-
-__global__ void gatherPartitionInfo(){
-    int circleIndex = blockIdx.x;
-    int partitionIndex = threadIdx.x;
-
-    __shared__ float3 p;
-    __shared__ float rad;
-    __shared__ float invWidth;
-    __shared__ float invHeight;
-    __shared__ int numCircles;
-
-    if (threadIdx.x==0){
-        p = *(float3 *)(&cuConstRendererParams.position[3* circleIndex]);
-        rad = cuConstRendererParams.radius[circleIndex];
-        invWidth = 1.f / cuConstRendererParams.imageWidth;
-        invHeight = 1.f / cuConstRendererParams.imageHeight;
-        numCircles = cuConstRendererParams.numberOfCircles;
-    }
-
-    __syncthreads();
-    
-    int indexPartitionArray = (numCircles) * partitionIndex + circleIndex;
-
-    // Calculate partition bounds
-    int partitionY = partitionIndex / 18;
-    int partitionX = partitionIndex % 18;
-
-    // Caluculate Sides
-
-    float boxL = invWidth * (static_cast<float>((partitionX * 64)) - 0.5f);
-    float boxR = invWidth * (static_cast<float>(min(((partitionX + 1) * 64),1150)) + 0.5f);
-    float boxT = invHeight * (static_cast<float>((partitionY * 32)) - 0.5f);
-    float boxB = invHeight * (static_cast<float>(min(((partitionY + 1) * 32),1150)) + 0.5f);
-
-    // int index3 = 3 * circleIndex;
-    if (circleInBox(p.x, p.y, rad, boxL, boxR, boxT, boxB)) {
-        cuConstRendererParams.circlesPerPartition[indexPartitionArray] = 1;
-        //memory intensive
-    }
-    else {
-        cuConstRendererParams.circlesPerPartition[indexPartitionArray] = 0;
-    }
-}
-
-__global__ void findIdxs(int baseCol) {
-    int index = threadIdx.x;
-    int partitionIndex = blockIdx.x;
-
-    __shared__ uint prefixSumInput[BLOCKSIZE];
-    __shared__ uint prefixSumOutput[BLOCKSIZE];
-    volatile __shared__ uint prefixSumScratch[2 * BLOCKSIZE];
-    __shared__ int numCircles;
-    __shared__ int lastIdx;
-
-    if (threadIdx.x == 0) {
-        numCircles = cuConstRendererParams.numberOfCircles;
-        lastIdx = cuConstRendererParams.lastCircleIndex[partitionIndex];
-    }
-    prefixSumInput[threadIdx.x] = 0;
-    prefixSumOutput[threadIdx.x] = 0;
-    prefixSumScratch[threadIdx.x] = 0;
-    prefixSumScratch[BLOCKSIZE+threadIdx.x] = 0;
-    __syncthreads();
-
-    //look at this 
-    if (threadIdx.x + baseCol < numCircles) {
-        prefixSumInput[threadIdx.x] = cuConstRendererParams.circlesPerPartition[partitionIndex*numCircles + threadIdx.x + baseCol];
-    }
-
-    __syncthreads();
-
-    sharedMemExclusiveScan(index, prefixSumInput, prefixSumOutput, prefixSumScratch, BLOCKSIZE);
-
-    __syncthreads();
-    
-    if (index < BLOCKSIZE-1){
-        if (prefixSumOutput[index]!=prefixSumOutput[index+1]){ // here??
-            // printf("%d\n", partitionIndex*numCircles + lastIdx + prefixSumOutput[index]);
-            cuConstRendererParams.circlesPerPartition[partitionIndex*numCircles + lastIdx + prefixSumOutput[index]]=index; // here??
-        }
-    }else{
-        int numIntersections= prefixSumOutput[BLOCKSIZE-1];
-        if(prefixSumInput[BLOCKSIZE-1]==1){
-            cuConstRendererParams.circlesPerPartition[partitionIndex*numCircles + lastIdx + numIntersections + 1]=BLOCKSIZE-1;
-            cuConstRendererParams.lastCircleIndex[partitionIndex] = lastIdx + numIntersections + 1;
-        }else{
-            cuConstRendererParams.lastCircleIndex[partitionIndex] = lastIdx + numIntersections;
-        }
-    }
-}
-
-__global__ void accumPixel(int circleBase) {
-    int partitionIndex = blockIdx.x / 2;
-    int partitionOffset = blockIdx.x % 2;
-    int xOffset = threadIdx.x;
-    int yOffset = threadIdx.y;
-    // Calculate partition bounds
-    int partitionY = partitionIndex / 18;
-    int partitionX = partitionIndex % 18; 
-
-    int threadLinear = blockDim.x*threadIdx.x + threadIdx.y;
-
-    __shared__ float3 circlesCoords[256];
-    __shared__ float circlesRad[256];
-    __shared__ float3 circlesColor[256];
-    __shared__ float4 accumShaded[2048];
-    __shared__ int lastCircleIndex;
-
-    if (threadLinear == 0) {
-        lastCircleIndex = cuConstRendererParams.lastCircleIndex[partitionIndex];
-    }
-
-    __syncthreads();
-
-    if (lastCircleIndex - circleBase < 0) {
-        return;
-    }
-
-    int trueCircleIndex = circleBase + threadLinear;
-    if (threadLinear < 256 && trueCircleIndex < lastCircleIndex) {
-        int circleArrayIndex = cuConstRendererParams.circlesPerPartition[trueCircleIndex];
-        circlesCoords[threadLinear] = *(float3 *)(&cuConstRendererParams.position[3*circleArrayIndex]);
-        circlesRad[threadLinear] = cuConstRendererParams.radius[circleArrayIndex];
-        circlesColor[threadLinear] = *(float3 *)&(cuConstRendererParams.color[3*circleArrayIndex]);
-    }
-    __syncthreads();
-
-    int pixelY = partitionY*32 + yOffset;
-    int pixelX = (partitionX+partitionOffset)*32 + xOffset;
-    int pixelIndex = pixelY*cuConstRendererParams.imageWidth + pixelX;
-    int blockIndex = blockDim.x*threadIdx.y + threadIdx.x;
-    accumShaded[blockIndex] = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
-    int invWidth = 1.f / cuConstRendererParams.imageWidth;
-    int invHeight = 1.f / cuConstRendererParams.imageHeight;
-
-    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                         invHeight * (static_cast<float>(pixelY) + 0.5f));
-
-    for (int i = 0; circleBase + i < lastCircleIndex; i++) {
-        shadePixelShared(pixelCenterNorm, circlesCoords[i], circlesRad[i], circlesColor[i], &accumShaded[blockIndex]);
-    }
-
-    float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
-    *imgPtr = accumShaded[blockIndex];
-}
-
 __global__ void oneKernel() {
-    int threadIndex = threadIdx.x;
-    int blockIndex = blockIdx.x;
-    int invWidth = 1.f / cuConstRendererParams.imageWidth;
-    int invHeight = 1.f / cuConstRendererParams.imageHeight;
+    int threadIndex = threadIdx.y*32+threadIdx.x;
+    float invWidth = 1.f / cuConstRendererParams.imageWidth;
+    float invHeight = 1.f / cuConstRendererParams.imageHeight;
     
-    // Calculate partition bounds
-    int partitionIndex = blockIndex;
-    int partitionY = partitionIndex / 36;
-    int partitionX = partitionIndex % 36;
+    // // Calculate partition bounds
 
-    // Calculate Sides
-    float boxL = invWidth * (static_cast<float>((partitionX * 32)) - 0.5f);
-    float boxR = invWidth * (static_cast<float>(min(((partitionX + 1) * 32),cuConstRendererParams.imageWidth)) + 0.5f);
-    float boxT = invHeight * (static_cast<float>((partitionY * 32)) - 0.5f);
-    float boxB = invHeight * (static_cast<float>(min(((partitionY + 1) * 32),cuConstRendererParams.imageHeight)) + 0.5f);
+    // int blockY = blockIdx.x / 36;
+    // int blockX = blockIdx.x % 36;
+    // // Calculate Sides
+    // float boxL = invWidth * (static_cast<float>((blockX * 32)) - 10.0f);
+    // float boxR = invWidth * (static_cast<float>(min(((blockX + 1) * 32), 1150)) + 10.0f);
+    // float boxT = invHeight * (static_cast<float>(((blockY + 1) * 32)) + 10.0f);
+    // float boxB = invHeight * (static_cast<float>(min((blockY * 32),1150)) - 10.0f);
 
     // threadIndex, blockIndex
     // Calculate partition Offset
-    int yOffset = threadIndex / 32;
-    int xOffset = threadIndex % 32;
-    // Calculate partition bounds
-    int partitionY = blockIndex / 36;
-    int partitionX = blockIndex % 36;
+    // int yOffset = threadIndex / 32;
+    // int xOffset = threadIndex % 32;
+    int pixelY = blockIdx.y*32 + threadIdx.y;
+    int pixelX = blockIdx.x*32 + threadIdx.x;
+    int pixelIndex = pixelY * cuConstRendererParams.imageWidth + pixelX;
+    float4 accumShaded;
+    float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX + 0.5f)),
+                                         invHeight * (static_cast<float>(pixelY + 0.5f)));
+
     if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight){
-        float4 accumShaded = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
-        int pixelY = partitionY*32 + yOffset;
-        int pixelX = partitionX*32 + xOffset;
-        int pixelIndex = pixelY*cuConstRendererParams.imageWidth + pixelX;
-        float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                            invHeight * (static_cast<float>(pixelY) + 0.5f));
+        accumShaded = *(float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
     }
 
-    for(int circleBase=0;i<cuConstRendererParams.numberOfCircles;circleBase+=1024){
-        // gather partition data
+    __syncthreads();
+
+    for(int circleBase=0;circleBase<cuConstRendererParams.numberOfCircles;circleBase+=1024){
+        //gather partition data
         __shared__ float3 p[1024];
         __shared__ float rad[1024];
-        __shared__ uint circlesInParitions[1024];
+        __shared__ uint circlesInPartitions[1024];
         __shared__ uint prefixSumOutput[BLOCKSIZE];
         volatile __shared__ uint prefixSumScratch[2 * BLOCKSIZE];
         __shared__ int numIntersections;
         __shared__ float3 color[1024];
 
+        numIntersections = 0;
+
         int circleIndex = circleBase + threadIndex;
-        if (circleBase + threadIndex < cuConstRendererParams.numberOfCircles) {
+        prefixSumOutput[threadIndex] = 0;
+        prefixSumScratch[threadIndex] = 0;
+        prefixSumScratch[BLOCKSIZE+threadIndex] = 0;
+        circlesInPartitions[threadIndex] = 0;
+        if (circleIndex < cuConstRendererParams.numberOfCircles) {
             p[threadIndex] = *(float3 *)(&cuConstRendererParams.position[3* circleIndex]);
             rad[threadIndex] = cuConstRendererParams.radius[circleIndex];
-            color[threadIndex] = *(float3 *)&(cuConstRendererParams.color[3*circleIndex])
-            circlesInParitions[threadIndex] = 0;
+            // if(circleInBox(p[threadIndex].x, p[threadIndex].y, rad[threadIndex], boxL, boxR, boxT, boxB)){
+            if(1) {
+                color[threadIndex] = *(float3 *)&(cuConstRendererParams.color[3*circleIndex]);
+                circlesInPartitions[threadIndex] = 1;
+                atomicAdd_block(&numIntersections, 1);
+            }
         }
 
         __syncthreads();
 
-        if (circleBase + threadIndex < cuConstRendererParams.numberOfCircles && circleInBox(p.x, p.y, rad, boxL, boxR, boxT, boxB)) {
-            circlesInParitions[threadIndex] = 1;
-            prefixSumOutput[threadIdx.x] = 0;
-            prefixSumScratch[threadIdx.x] = 0;
-            prefixSumScratch[BLOCKSIZE+threadIdx.x] = 0;
-        }else {
-            circlesInParitions[threadIndex] = 0;
-            prefixSumOutput[threadIdx.x] = 0;
-            prefixSumScratch[threadIdx.x] = 0;
-            prefixSumScratch[BLOCKSIZE+threadIdx.x] = 0;
-        }
-
-        __syncthreads();
-
-        sharedMemExclusiveScan(threadIndex, circlesInParitions, prefixSumOutput, prefixSumScratch, BLOCKSIZE);
+        sharedMemExclusiveScan(threadIndex, circlesInPartitions, prefixSumOutput, prefixSumScratch, BLOCKSIZE);
 
         __syncthreads();
         
         if (threadIndex < BLOCKSIZE-1){
-            if (prefixSumOutput[threadIndex]!= prefixSumOutput[threadIndex+1]){
-                circlesInParitions[prefixSumOutput[threadIndex]] = circleBase + threadIndex;
+            if (prefixSumOutput[threadIndex] != prefixSumOutput[threadIndex+1]){
+                circlesInPartitions[prefixSumOutput[threadIndex]] = threadIndex;
             }
         }else{
-            numIntersections = prefixSumOutput[BLOCKSIZE-1];
-            if(circlesInParitions[BLOCKSIZE-1]==1){
-                circlesInParitions[numIntersections] = circleBase + BLOCKSIZE-1;
+            if(circlesInPartitions[BLOCKSIZE-1] == 1){
+                circlesInPartitions[numIntersections-1] = BLOCKSIZE-1;
             }
         }
+
         __syncthreads();
 
         if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight) {
             // accumulation stage
             for (int i = 0; i < numIntersections; i++) {
-                int currIdx = circlesInPartitions[i];
-                shadePixelShared(pixelCenterNorm, p[currIdx], rad[currIdx], color[currIdx], &accumShaded);
+                shadePixelShared(pixelCenterNorm, p[i], rad[i], color[i], &accumShaded);
             }   
         }
         __syncthreads();
     }
 
+    if (blockIdx.x == 0 && blockIdx.y == 0) {
     if (pixelIndex < cuConstRendererParams.imageWidth*cuConstRendererParams.imageHeight) {
         float4 *imgPtr = (float4 *)(&cuConstRendererParams.imageData[4 * pixelIndex]);
         *imgPtr = accumShaded;
     }
+    }
+    __syncthreads();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -714,18 +564,11 @@ CudaRenderer::CudaRenderer() {
     color = NULL;
     radius = NULL;
 
-    circlesPerPartition = NULL;
-    lastCircleIndex = NULL;
-
     cudaDevicePosition = NULL;
     cudaDeviceVelocity = NULL;
     cudaDeviceColor = NULL;
     cudaDeviceRadius = NULL;
     cudaDeviceImageData = NULL;
-
-    cudaDeviceCirclesPerPartition = NULL;
-    cudaDeviceLastCircleIndex = NULL;
-
 }
 
 CudaRenderer::~CudaRenderer() {
@@ -738,7 +581,6 @@ CudaRenderer::~CudaRenderer() {
         delete[] velocity;
         delete[] color;
         delete[] radius;
-        delete[] circlesPerPartition;
     }
 
     if (cudaDevicePosition) {
@@ -747,8 +589,6 @@ CudaRenderer::~CudaRenderer() {
         cudaFree(cudaDeviceColor);
         cudaFree(cudaDeviceRadius);
         cudaFree(cudaDeviceImageData);
-        cudaFree(cudaDeviceLastCircleIndex);
-        cudaFree(cudaDeviceCirclesPerPartition);
     }
 }
 
@@ -911,8 +751,8 @@ void CudaRenderer::advanceAnimation() {
 }
 
 void CudaRenderer::render() {
-    dim3 blockDim(1024,1);
-    dim3 gridDim(1296,1);
-    oneKernel<<<gridDim, blockDim>>>(i);
+    dim3 blockDim(32,32);
+    dim3 gridDim(36,36);
+    oneKernel<<<gridDim, blockDim>>>();
     cudaCheckError( cudaDeviceSynchronize() );
 }
