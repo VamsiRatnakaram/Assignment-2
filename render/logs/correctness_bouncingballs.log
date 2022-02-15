@@ -1,0 +1,23 @@
+Rendering to 1150x1150 image
+Loaded scene with 10 circles
+Loaded scene with 10 circles
+---------------------------------------------------------
+Initializing CUDA for CudaRenderer
+Found 1 CUDA devices
+Device 0: NVIDIA GeForce RTX 2080
+   SMs:        46
+   Global mem: 7974 MB
+   CUDA Cap:   7.5
+---------------------------------------------------------
+WARNING: You're not running on a fast GPU, please consider using NVIDIA RTX 2080.
+---------------------------------------------------------
+
+Running benchmark, 1 frames, beginning at frame 0 ...
+Copying image data from device
+***************** Correctness check passed **************************
+Clear:    0.0933 ms
+Advance:  0.0083 ms
+Render:   0.1661 ms
+Total:    0.2678 ms
+
+Overall:  0.0139 sec (note units are seconds)
